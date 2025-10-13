@@ -3,7 +3,6 @@ import jax
 import jax.numpy as jnp
 from jax import random
 from jax.nn import initializers
-from jax.scipy.special import logsumexp # A numerically stable way to compute log(sum(exp(x)))
 
 # A stable GELU activation function implementation
 # Gaussian Error Linear Unit is a smooth activation often used in transformers.
