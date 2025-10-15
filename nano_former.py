@@ -250,15 +250,15 @@ def decoder_layer_apply(params, x, enc_output, look_ahead_mask, padding_mask, d_
 ## 8. Full Transformer Model
 #---------------------------------------------------#
 # The Transformer model stacks N encoder layers and N decoder layers.
-def transformer_init_params(key, num_layers, vocab_size, d_model, num_heads, d_ff):
+def transformer_init_params(key, num_layers, src_vocab_size, tgt_vocab_size, d_model, num_heads, d_ff):
     """Initializes parameters for the entire Transformer model."""
     keys = random.split(key, num_layers * 2 + 2)
     return {
-        "encoder_embedding": initializers.glorot_uniform()(keys[0], (vocab_size, d_model)),
-        "decoder_embedding": initializers.glorot_uniform()(keys[1], (vocab_size, d_model)),
+        "encoder_embedding": initializers.glorot_uniform()(keys[0], (src_vocab_size, d_model)),
+        "decoder_embedding": initializers.glorot_uniform()(keys[1], (tgt_vocab_size, d_model)),
         "encoder_layers": [encoder_layer_init_params(keys[i+2], d_model, num_heads, d_ff) for i in range(num_layers)],
         "decoder_layers": [decoder_layer_init_params(keys[i+2+num_layers], d_model, num_heads, d_ff) for i in range(num_layers)],
-        "final_linear": initializers.glorot_uniform()(keys[-1], (d_model, vocab_size))
+        "final_linear": initializers.glorot_uniform()(keys[-1], (d_model, tgt_vocab_size))
     }
 
 def transformer_apply(params, src, tgt, src_mask, tgt_mask, num_layers, d_model, num_heads):
@@ -320,7 +320,7 @@ if __name__ == '__main__':
     # 1. Initialize model parameters
     print("Initializing model parameters...")
     model_params = transformer_init_params(
-        key, num_layers, src_vocab_size, d_model, num_heads, d_ff
+        key, num_layers, src_vocab_size, tgt_vocab_size, d_model, num_heads, d_ff
     )
     print("Done.\n")
     
@@ -344,7 +344,7 @@ if __name__ == '__main__':
     # JAX's Just-In-Time (JIT) compilation will dramatically speed up execution.
     # The first run will be slow due to compilation, but subsequent runs will be fast.
     print("JIT compiling the model's forward pass...")
-    fast_transformer_apply = jax.jit(transformer_apply, static_argnums=(4, 5, 6))
+    fast_transformer_apply = jax.jit(transformer_apply, static_argnums=(5, 6, 7))
     print("Done.\n")
 
     # 5. Run the forward pass
