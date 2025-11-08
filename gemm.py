@@ -1,3 +1,4 @@
+import functools
 import time
 import numpy as np
 
@@ -46,3 +47,34 @@ def gemm_ikj(lhs, rhs):
     return out
 
 print(time_fn(gemm_ikj, x, y))
+
+def gemm_tiled(lhs, rhs, tiling):
+    assert len(lhs[0]) == len(rhs) 
+    m, k, n = len(lhs), len(lhs[0]), len(rhs[0])
+    mt, kt, nt = tiling
+    assert m % mt == 0
+    assert k % kt == 0
+    assert n % nt == 0
+    out = [[0 for _ in range(n)] for _ in range(m)]
+    # iterate over the tiles
+    for mti in range(0, m, mt):
+        for nti in range(0, n, nt):
+            for kti in range(0, k, kt):
+                # iterate over the elements in the tile
+                for mi in range(mti, mti+mt):
+                    # row of output
+                    out_mi = out[mi]
+                    for ni in range(nti, nti+nt):
+                        acc = 0
+                        for ki in range(kti, kti+kt):
+                            acc += lhs[mi][ki] * rhs[ki][ni]
+                        out_mi[ni] += acc
+    return out
+
+gemm_tiled_8_16_32 = functools.partial(gemm_tiled, tiling=(8, 16, 32))
+gemm_tiled_8_16_32.__name__ = "gemm_tiled_8_16_32"
+print(time_fn(gemm_tiled_8_16_32, x, y))
+
+gemm_tiled_32_32_32 = functools.partial(gemm_tiled, tiling=(32, 32, 32))
+gemm_tiled_32_32_32.__name__ = "gemm_tiled_32_32_32"
+print(time_fn(gemm_tiled_32_32_32, x, y))
