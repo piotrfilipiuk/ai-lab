@@ -1,4 +1,5 @@
 import numpy as np
+import scipy
 
 def conv_2d(arr, kernel):
     arr_height = len(arr)
@@ -29,5 +30,7 @@ k_height, k_width = 3, 2
 k = [[h*k_width+w for w in range(k_width)] for h in range(k_height)]
 print(k)
 
-print(conv_2d(x, k))
-     
+out = conv_2d(x, k)
+print(out)
+
+np.testing.assert_allclose(scipy.signal.correlate2d(np.array(x), np.array(k), mode='valid'), out)
