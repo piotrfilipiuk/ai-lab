@@ -1,15 +1,25 @@
 import numpy as np
 import scipy
 
-def conv_2d(arr, kernel):
+def conv_2d(arr, kernel, padding = 0, stride = 1):
     arr_height = len(arr)
     arr_width = len(arr[0])
     kernel_height = len(kernel)
     kernel_width = len(kernel[0])
 
+    assert padding >= 0
+    padded_arr = arr
+    if padding > 0:
+        padded_height = arr_height + 2 * padding
+        padded_width = arr_width + 2 * padding
+        padded_arr = [[0.0 for _ in range(padded_width)] for _ in range(padded_height)]
+        for i in range(arr_height):
+            for j in range(arr_width):
+                padded_arr[padding+i][padding+j] = arr[i][j]
+
     # assuming no padding and stride of 1.
-    out_height = arr_height - kernel_height + 1
-    out_width = arr_width - kernel_width + 1
+    out_height = (len(padded_arr) - kernel_height) // stride + 1
+    out_width = (len(padded_arr[0]) - kernel_width) // stride + 1
     out = [[0.0 for _ in range(out_width)] for _ in range(out_height)]
 
     for i in range(out_height):
