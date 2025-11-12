@@ -1,6 +1,8 @@
 import numpy as np
 import scipy
 
+import gemm
+
 def conv_2d(arr, kernel, padding = 0, stride = 1):
     arr_height = len(arr)
     arr_width = len(arr[0])
@@ -44,3 +46,54 @@ out = conv_2d(x, k)
 print(out)
 
 np.testing.assert_allclose(scipy.signal.correlate2d(np.array(x), np.array(k), mode='valid'), out)
+
+def im2col(arr, kernel_h, kernel_w):
+    arr_h = len(arr)
+    arr_w = len(arr[0])
+    out_h = arr_h - kernel_h + 1
+    out_w = arr_w - kernel_w + 1
+    out = []
+    for i in range(out_h):
+        for j in range(out_w):
+            curr = []
+            for ki in range(kernel_h):
+                for kj in range(kernel_w):
+                    curr.append(arr[i+ki][j+kj])
+            out.append(curr)
+    return out
+
+
+print(im2col(x, k_height, k_width))
+
+
+def conv2d_as_matmul(arr, kernel):
+    arr_h = len(arr)
+    arr_w = len(arr[0])
+    kernel_h = len(kernel)
+    kernel_w = len(kernel[0])
+    out_h = arr_h - kernel_h + 1
+    out_w = arr_w - kernel_w + 1
+    # flatten arr to rows
+    arr = im2col(arr, kernel_h, kernel_w)
+    print(f"arr = {arr}")
+    # flatten kernel to cols
+    flattened = [x for row in kernel for x in row]
+    print(f"flattened = {flattened}")
+    xkernel = [[x] for x in flattened]
+    print(f"xkernel = {xkernel}")
+    out = gemm.gemm_ijk(arr, xkernel)
+    print(f"dot = {out}")
+    # reshape
+    result = []
+    i = 0
+    for _ in range(out_h):
+        row = []
+        for _ in range(out_w):
+            row.append(out[i][0])
+            i += 1
+        result.append(row)
+    return result
+
+out_as_matmul = conv2d_as_matmul(x, k)
+print(out_as_matmul)
+np.testing.assert_allclose(out, out_as_matmul)
