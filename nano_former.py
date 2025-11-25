@@ -162,6 +162,96 @@ def feed_forward_apply(params, x):
     return x
 
 #---------------------------------------------------#
+## Mixture of Experts
+#---------------------------------------------------#
+def moe_init_params(key, d_model, d_ff, num_experts):
+    """
+    Initializes all parameters for the MoE Transformer model.
+    """
+    keys = random.split(key, num_experts+1)
+    return {
+       # Gating network parameters
+       "gate": {
+          "wg": random.normal(keys[-1], (d_model, num_experts))
+       },
+       # Parameters for each expert
+       "experts": {
+           f"expert_{j}": {
+               "w1": random.normal(keys[j], (d_model, d_ff)),
+               "b1": jnp.zeros((d_ff,)),
+               "w2": random.normal(keys[j], (d_ff, d_model)),
+               "b2": jnp.zeros((d_model,)),
+           } for j in range(num_experts)
+       }
+    }
+
+def moe_apply(params, x, num_experts, top_k=3):
+    """
+    A Mixture of Experts (MoE) layer supporting Top-K routing.
+    """
+    batch_size, seq_len, d_model = x.shape
+
+    # 1. Gating Network
+    # Shape: (batch, seq, num_experts)
+    gate_logits = jnp.matmul(x, params["gate"]["wg"])
+    
+    # 2. Get Top-K Indices and Values
+    # We use jax.lax.top_k to find the k highest scores and their indices.
+    # gate_values shape: (batch, seq, top_k) - The logits or probs of the best experts
+    # expert_indices shape: (batch, seq, top_k) - The IDs of the best experts
+    gate_logits_top_k, expert_indices = jax.lax.top_k(gate_logits, k=top_k)
+
+    # 3. Softmax & Normalization
+    # We typically apply softmax only over the top-k selected experts to ensure
+    # the weights we use for aggregation sum to 1.
+    weights = jax.nn.softmax(gate_logits_top_k, axis=-1)
+    
+    # 4. Create Mask for "Scatter/Gather" operations
+    # We need a way to send the right tokens to the right experts.
+    # Shape: (batch, seq, top_k, num_experts)
+    # This one-hot encodes the expert ID chosen at each of the k positions.
+    expert_mask = jax.nn.one_hot(expert_indices, num_classes=num_experts)
+
+    # 5. Process Experts
+    # Flatten batch and seq dimensions for processing
+    flat_x = x.reshape(-1, d_model) # (batch*seq, d_model)
+    
+    # Run all experts. (In production, you'd use parallel computation/sharding here)
+    # We calculate the output of EVERY expert on EVERY token (naive implementation)
+    # Note: Optimizing this to only run selected experts requires 'dispatch/combine' logic 
+    # which is complex in pure JAX without library helpers like flax/haiku.
+    # For this educational 'minimal' version, we compute all and mask the results.
+    
+    all_expert_outputs = []
+    for i in range(num_experts):
+        out = feed_forward_apply(params["experts"][f"expert_{i}"], flat_x)
+        all_expert_outputs.append(out)
+    
+    # Stack: (num_experts, batch*seq, d_model)
+    stacked_expert_outputs = jnp.stack(all_expert_outputs)
+    
+    # Reshape to (batch, seq, num_experts, d_model) to match our mask
+    # We move num_experts to the 2nd dim to align with the mask logic
+    stacked_expert_outputs = stacked_expert_outputs.transpose(1, 0, 2).reshape(batch_size, seq_len, num_experts, d_model)
+
+    # 6. Aggregate (Weighted Sum)
+    # We now have:
+    #   weights:      (batch, seq, top_k)
+    #   expert_mask:  (batch, seq, top_k, num_experts)
+    #   outputs:      (batch, seq, num_experts, d_model)
+    
+    # First, select the specific outputs for our top_k experts.
+    # We sum over num_experts (e) using the mask to pick the right one.
+    # Result: (batch, seq, top_k, d_model)
+    selected_outputs = jnp.einsum("bst e, bse d -> bst d", expert_mask, stacked_expert_outputs)
+
+    # Finally, weight them by the gate probabilities and sum over top_k (t).
+    # Result: (batch, seq, d_model)
+    final_output = jnp.einsum("bst, bst d -> bsd", weights, selected_outputs)
+
+    return final_output
+
+#---------------------------------------------------#
 ## 5. Layer Normalization
 #---------------------------------------------------#
 # Used to stabilize training by normalizing the inputs to each sub-layer.
@@ -184,17 +274,22 @@ def layer_norm_apply(params, x):
 # An encoder layer consists of a multi-head self-attention mechanism followed by
 # a position-wise feed-forward network. Residual connections and layer normalization
 # are applied around each of the two sub-layers.
-def encoder_layer_init_params(key, d_model, num_heads, d_ff):
+def encoder_layer_init_params(key, d_model, num_heads, d_ff, num_experts):
     """Initializes parameters for a single Encoder Layer."""
     mha_key, ffn_key = random.split(key)
-    return {
+    params = {
         "mha": multi_head_attention_init_params(mha_key, d_model, num_heads),
-        "ffn": feed_forward_init_params(ffn_key, d_model, d_ff),
         "norm1": layer_norm_init_params(d_model),
         "norm2": layer_norm_init_params(d_model)
     }
+    if num_experts == 1:
+        params["ffn"] = feed_forward_init_params(ffn_key, d_model, d_ff)
+    else:
+        assert num_experts > 1
+        params["moe"] = moe_init_params(ffn_key, d_model, d_ff, num_experts)
+    return params
 
-def encoder_layer_apply(params, x, mask, d_model, num_heads):
+def encoder_layer_apply(params, x, mask, d_model, num_heads, num_experts):
     """Applies a single Encoder Layer."""
     # 1. Multi-Head Attention sub-layer
     attn_output, _ = multi_head_attention_apply(
@@ -203,8 +298,12 @@ def encoder_layer_apply(params, x, mask, d_model, num_heads):
     # Residual connection and layer normalization
     x = layer_norm_apply(params["norm1"], x + attn_output)
 
-    # 2. Feed-Forward sub-layer
-    ffn_output = feed_forward_apply(params["ffn"], x)
+    if num_experts == 1:
+        # 2. Feed-Forward sub-layer
+        ffn_output = feed_forward_apply(params["ffn"], x)
+    else:
+        assert num_experts > 1
+        ffn_output = moe_apply(params["moe"], x, num_experts)
     # Residual connection and layer normalization
     x = layer_norm_apply(params["norm2"], x + ffn_output)
     return x
@@ -214,19 +313,24 @@ def encoder_layer_apply(params, x, mask, d_model, num_heads):
 #---------------------------------------------------#
 # A decoder layer has three sub-layers: masked self-attention, encoder-decoder
 # attention, and a feed-forward network.
-def decoder_layer_init_params(key, d_model, num_heads, d_ff):
+def decoder_layer_init_params(key, d_model, num_heads, d_ff, num_experts):
     """Initializes parameters for a single Decoder Layer."""
     mha1_key, mha2_key, ffn_key = random.split(key, 3)
-    return {
+    params = {
         "mha1": multi_head_attention_init_params(mha1_key, d_model, num_heads),
         "mha2": multi_head_attention_init_params(mha2_key, d_model, num_heads),
-        "ffn": feed_forward_init_params(ffn_key, d_model, d_ff),
         "norm1": layer_norm_init_params(d_model),
         "norm2": layer_norm_init_params(d_model),
         "norm3": layer_norm_init_params(d_model)
     }
+    if num_experts == 1:
+        params["ffn"] = feed_forward_init_params(ffn_key, d_model, d_ff)
+    else:
+        assert num_experts > 1
+        params["moe"] = moe_init_params(ffn_key, d_model, d_ff, num_experts)
+    return params
 
-def decoder_layer_apply(params, x, enc_output, look_ahead_mask, padding_mask, d_model, num_heads):
+def decoder_layer_apply(params, x, enc_output, look_ahead_mask, padding_mask, d_model, num_heads, num_experts):
     """Applies a single Decoder Layer."""
     # 1. Masked Multi-Head Attention (self-attention)
     attn1, _ = multi_head_attention_apply(
@@ -241,8 +345,12 @@ def decoder_layer_apply(params, x, enc_output, look_ahead_mask, padding_mask, d_
     )
     x = layer_norm_apply(params["norm2"], x + attn2)
 
-    # 3. Feed-Forward Network
-    ffn_output = feed_forward_apply(params["ffn"], x)
+    if num_experts == 1:
+        # 3. Feed-Forward Network
+        ffn_output = feed_forward_apply(params["ffn"], x)
+    else:
+        assert num_experts > 1
+        ffn_output = moe_apply(params["moe"], x, num_experts)
     x = layer_norm_apply(params["norm3"], x + ffn_output)
     return x
 
@@ -250,18 +358,18 @@ def decoder_layer_apply(params, x, enc_output, look_ahead_mask, padding_mask, d_
 ## 8. Full Transformer Model
 #---------------------------------------------------#
 # The Transformer model stacks N encoder layers and N decoder layers.
-def transformer_init_params(key, num_layers, src_vocab_size, tgt_vocab_size, d_model, num_heads, d_ff):
+def transformer_init_params(key, num_layers, src_vocab_size, tgt_vocab_size, d_model, num_heads, d_ff, num_experts):
     """Initializes parameters for the entire Transformer model."""
     keys = random.split(key, num_layers * 2 + 2)
     return {
         "encoder_embedding": initializers.glorot_uniform()(keys[0], (src_vocab_size, d_model)),
         "decoder_embedding": initializers.glorot_uniform()(keys[1], (tgt_vocab_size, d_model)),
-        "encoder_layers": [encoder_layer_init_params(keys[i+2], d_model, num_heads, d_ff) for i in range(num_layers)],
-        "decoder_layers": [decoder_layer_init_params(keys[i+2+num_layers], d_model, num_heads, d_ff) for i in range(num_layers)],
+        "encoder_layers": [encoder_layer_init_params(keys[i+2], d_model, num_heads, d_ff, num_experts) for i in range(num_layers)],
+        "decoder_layers": [decoder_layer_init_params(keys[i+2+num_layers], d_model, num_heads, d_ff, num_experts) for i in range(num_layers)],
         "final_linear": initializers.glorot_uniform()(keys[-1], (d_model, tgt_vocab_size))
     }
 
-def transformer_apply(params, src, tgt, src_mask, tgt_mask, num_layers, d_model, num_heads):
+def transformer_apply(params, src, tgt, src_mask, tgt_mask, num_layers, d_model, num_heads, num_experts):
     """Applies the full Transformer model (forward pass)."""
     # 1. Get sequence lengths and apply embeddings
     src_seq_len = src.shape[1]
@@ -277,11 +385,11 @@ def transformer_apply(params, src, tgt, src_mask, tgt_mask, num_layers, d_model,
 
     # 2. Encoder Stack
     for i in range(num_layers):
-        enc_output = encoder_layer_apply(params["encoder_layers"][i], enc_output, src_mask, d_model, num_heads)
+        enc_output = encoder_layer_apply(params["encoder_layers"][i], enc_output, src_mask, d_model, num_heads, num_experts)
 
     # 3. Decoder Stack
     for i in range(num_layers):
-        dec_output = decoder_layer_apply(params["decoder_layers"][i], dec_output, enc_output, tgt_mask, src_mask, d_model, num_heads)
+        dec_output = decoder_layer_apply(params["decoder_layers"][i], dec_output, enc_output, tgt_mask, src_mask, d_model, num_heads, num_experts)
         
     # 4. Final Linear layer and Softmax
     final_output = jnp.matmul(dec_output, params["final_linear"])
@@ -304,7 +412,7 @@ def create_look_ahead_mask(size):
 #---------------------------------------------------#
 ## 10. Example Usage
 #---------------------------------------------------#
-if __name__ == '__main__':
+if __name__ == "__main__":
     # Hyperparameters
     key = random.PRNGKey(0)
     batch_size = 2
@@ -316,11 +424,13 @@ if __name__ == '__main__':
     d_model = 128       # Embedding dimension
     num_heads = 8       # Number of attention heads
     d_ff = 512          # Hidden layer size in FFN
+    # If num_experts == 1 we use ffn, otherwise if num_experts > 1 we use moe
+    num_experts = 8     # Number of experts
 
     # 1. Initialize model parameters
     print("Initializing model parameters...")
     model_params = transformer_init_params(
-        key, num_layers, src_vocab_size, tgt_vocab_size, d_model, num_heads, d_ff
+        key, num_layers, src_vocab_size, tgt_vocab_size, d_model, num_heads, d_ff, num_experts
     )
     print("Done.\n")
     
@@ -344,14 +454,14 @@ if __name__ == '__main__':
     # JAX's Just-In-Time (JIT) compilation will dramatically speed up execution.
     # The first run will be slow due to compilation, but subsequent runs will be fast.
     print("JIT compiling the model's forward pass...")
-    fast_transformer_apply = jax.jit(transformer_apply, static_argnums=(5, 6, 7))
+    fast_transformer_apply = jax.jit(transformer_apply, static_argnums=(5, 6, 7, 8))
     print("Done.\n")
 
     # 5. Run the forward pass
     print("Running a forward pass...")
     output_logits = fast_transformer_apply(
         model_params, dummy_src, dummy_tgt, src_padding_mask, look_ahead_mask,
-        num_layers, d_model, num_heads
+        num_layers, d_model, num_heads, num_experts
     )
     print("Done.\n")
     
