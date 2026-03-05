@@ -61,7 +61,7 @@ the noisy realities of the analog components executing them.
 ## Running the Prototype
 
 ```bash
-blaze run //experimental/users/pfilipiuk/stoch_ir:stoch_ir
+python3 stoch_ir.py
 ```
 
 This will run a Monte Carlo simulation of a small graph: `Output = (A + B) * (C
