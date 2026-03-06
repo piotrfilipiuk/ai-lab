@@ -8,13 +8,13 @@ substrates.
 Instead of traditional compiler lowering (where we assume perfect bitwise
 computation on a von Neumann architecture), StochIR takes a **"First Principles
 Mapping"** approach. It maps a computation graph directly onto noisy analog
-components where hardware-level noise isn't simulated awayit is embedded into
+components where hardware-level noise isn't simulated away; it is embedded into
 the math.
 
 ## The Problem: Noise is a Feature, not a Bug
 
 Building software interfaces to the physics of silicon requires a compiler that
-understands stochasticity. When running neural networks on analog dynamics,
+understands stochasticity. When running neural networks on analog hardware,
 operations are subject to thermal drift, shot noise, and analog decay.
 
 Professor Michael Carbin's research at MIT on "Programming Systems for
@@ -40,17 +40,15 @@ non-deterministic.
 4.  **Hardware Calibration Mapping**: The `NoiseAnalysisPass` statically
     analyzes SNR degradation using a dry-run Monte Carlo simulation. If variance
     drifts past a threshold, it inserts a `DigitizeOp` (ADC). The compiler
-    programs the exact digital ground-truth into the ADC layout so that the
-    analog signal is mathematically shifted, quantized, and shifted
-    backperfectly squashing thermal noise and mimicking industrial Offset
-    Compensation techniques.
+    programs the exact digital ground-truth into the ADC so that the analog
+    signal is mathematically shifted, quantized, and shifted back; perfectly
+    squashing thermal noise and mimicking industrial Offset Compensation techniques.
 
 ## Why This Matters (The Pitch)
 
 Coming from a background of working extensively with high-level distributed
-compilation and tensor representations (like Google's `maxtext` and
-`ragged_dot`), I understand how to organize structured linear algebra for
-massive scale.
+compilation and tensor representations (XLA-TPU), I understand how to organize
+structured linear algebra for massive scale.
 
 However, the future of unconventional silicon isn't just about massive FLOPs;
 its about what happens to those FLOPs against the physics of the substrate.
